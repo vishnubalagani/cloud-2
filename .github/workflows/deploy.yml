@@ -1,10 +1,13 @@
-
 name: Build and Deploy to EKS
 
 on:
   push:
     branches:
       - main
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: java-app
 
 jobs:
   deploy:
@@ -22,35 +25,54 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
 
+    # ---------- Build Spring Boot ----------
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 11
+
+    - name: Build Maven Project
+      run: |
+        cd board
+        mvn clean package -DskipTests
+
+    # ---------- Login ECR ----------
     - name: Login to ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
+    # ---------- Build Docker ----------
     - name: Build Docker image
       run: |
         docker build -t java-app .
         docker tag java-app:latest ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
 
+    # ---------- Push Image ----------
     - name: Push Docker image
       run: |
         docker push ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
 
+    # ---------- Install kubectl ----------
     - name: Install kubectl
       run: |
         curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
         chmod +x kubectl
         sudo mv kubectl /usr/local/bin/
 
+    # ---------- Configure EKS ----------
     - name: Update kubeconfig
       run: |
         aws eks update-kubeconfig \
         --region ${{ secrets.AWS_REGION }} \
         --name ${{ secrets.EKS_CLUSTER_NAME }}
 
+    # ---------- Replace Image ----------
     - name: Replace image in deployment
       run: |
         sed -i "s|IMAGE_URI|${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest|g" deployment.yaml
 
+    # ---------- Deploy ----------
     - name: Deploy to Kubernetes
       run: |
         kubectl apply -f deployment.yaml
